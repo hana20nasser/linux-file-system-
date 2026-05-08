@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "snapshot.h"
-
 #define BUFFER_SIZE 1024
 #define MAX_PATH  1024
 

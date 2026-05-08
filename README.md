@@ -6,9 +6,13 @@
 
 ## Project Status
 
-**Task 1 (File System Scanner) — ✅ COMPLETE**
-
-All remaining tasks (2–5) are **not yet started**. This document describes what has been built, the exact state of the codebase, known issues, and the full specification for what contributors need to implement next.
+| Task | Description | Status |
+| ---- | ----------- | ------ |
+| Task 1 | File System Scanner | ✅ COMPLETE |
+| Task 2 | Snapshot Creator | ✅ COMPLETE |
+| Task 3 | Change Detection (Comparison Engine) | ✅ COMPLETE |
+| Task 4 | Snapshot Manager (CLI) | 🔲 Not started |
+| Task 5 | Restore System | 🔲 Not started |
 
 ---
 
@@ -16,20 +20,31 @@ All remaining tasks (2–5) are **not yet started**. This document describes wha
 
 ```
 .
-├── main.c          # Entry point — drives the scanner and prints results
+├── main.c          # Entry point — drives Tasks 1, 2, and 3 in sequence
 ├── scanner.h       # Public API and FileInfo struct definition
-├── scanner.c       # Recursive directory walker (Task 1 implementation)
+├── scanner.c       # Recursive directory walker (Task 1)
+├── snapshot.h      # Public API for snapshot creation
+├── snapshot.c      # Snapshot creator implementation (Task 2)
+├── compare.h       # Public API for change detection
+├── compare.c       # Comparison engine implementation (Task 3)
+├── snapshots/      # Directory where snapshots are stored
+│   └── snapshot_1/
+│       ├── snapshot.meta   ← metadata index for this snapshot
+│       └── <copied files>  ← mirrored directory tree
 └── README.md       # This file
 ```
 
 ---
 
-## What Has Been Built — Task 1: File System Scanner
+## What Has Been Built
 
-### Purpose
-Recursively walk a directory tree, collect metadata for every regular file, and return the results in a flat array of `FileInfo` structs.
+### Task 1 — File System Scanner ✅
 
-### Public API (`scanner.h`)
+**Files:** `scanner.h`, `scanner.c`
+
+**Purpose:** Recursively walk a directory tree, collect metadata for every regular file, and return the results in a flat array of `FileInfo` structs.
+
+**Public API (`scanner.h`):**
 
 ```c
 typedef struct {
@@ -41,116 +56,214 @@ typedef struct {
 int scan_directory(const char *path, FileInfo files[], int *count);
 ```
 
-`scan_directory` initialises `*count` to zero, delegates to the internal recursive helper, and always returns 0. The caller supplies a pre-allocated array (`FileInfo files[1000]` in `main.c`).
+**How it works:**
 
-### Internal Implementation (`scanner.c`)
+`scan_directory` initialises `*count` to zero and calls the internal `scan_recursive` helper. That helper uses POSIX `opendir` / `readdir` to iterate each directory entry, skips `.` and `..`, builds an absolute path, and stats the entry. Regular files get their path, size, and `st_mtime` written into the `files` array. Directories trigger a recursive call on themselves.
 
-`scan_recursive` uses POSIX `opendir` / `readdir` to iterate each directory entry, skips `.` and `..`, builds an absolute path with `sprintf`, stats the entry, and then:
-
-- **Regular file** → writes path, size, and `st_mtime` into `files[*count]` and increments the counter.
-- **Directory** → calls itself recursively.
-
-### Current Output Format (`main.c`)
+**Output format:**
 
 ```
-/home/vboxuser/file_project/foo.c  | 2048 bytes | 2026-04-30 14:22
+/home/user/file_project/foo.c  | 2048 bytes | 2026-04-30 14:22
 ```
 
 The timestamp is formatted with `strftime("%Y-%m-%d %H:%M")`.
 
 ---
 
+### Task 2 — Snapshot Creator ✅
+
+**Files:** `snapshot.h`, `snapshot.c`
+
+**Purpose:** Take the `FileInfo` array produced by Task 1 and physically copy every file into a versioned snapshot directory, while writing a machine-readable metadata index (`snapshot.meta`) that Tasks 3 and 5 depend on.
+
+**Public API (`snapshot.h`):**
+
+```c
+int create_snapshot(const char *source_dir, const char *snapshot_folder,
+                    FileInfo files[], int count);
+```
+
+**How it works:**
+
+`create_snapshot` does the following steps in order:
+
+1. **Creates the snapshot directory** using `create_directories()`, which iterates the path character by character and calls `mkdir(path, 0777)` on each prefix — this gives `mkdir -p` semantics without relying on the shell.
+
+2. **Opens `snapshot.meta`** for writing (truncated fresh each run) inside the snapshot folder.
+
+3. **Iterates every `FileInfo`** in the array:
+   - Strips the source directory prefix from the absolute path using `get_relative_path()` to get a path like `subdir/file.c`.
+   - Builds the destination path as `snapshot_folder/subdir/file.c`.
+   - Calls `copy_file()` which opens the source with `O_RDONLY`, creates any missing parent directories, opens the destination with `O_WRONLY | O_CREAT | O_TRUNC`, and copies content in 1 KB chunks using `read` / `write`.
+   - On success, writes one line to `snapshot.meta` in the format:
+     ```
+     /absolute/path/to/original/file <size> <mtime>
+     ```
+
+**`snapshot.meta` format (current):**
+
+```
+/home/user/file_project/main.c 3200 1745990000
+/home/user/file_project/foo.c 2048 1745991234
+```
+
+Each line is one file: absolute path, size in bytes, and last-modified time — all space-separated. `load_snapshot_meta()` also tolerates a `created_at <epoch>` header line if it is added later.
+
+**Example output:**
+
+```
+Copied: /home/user/file_project/main.c
+Copied: /home/user/file_project/foo.c
+
+Snapshot created successfully in: /home/user/snapshots/snapshot_1
+```
+
+---
+
+### Task 3 — Change Detection (Comparison Engine) ✅
+
+**Files:** `compare.h`, `compare.c`
+
+**Purpose:** Compare the live state of a directory against a saved snapshot and report which files were Added, Modified, or Deleted.
+
+**Public API (`compare.h`):**
+
+```c
+typedef struct {
+    char added[1000][256];
+    int  added_count;
+
+    char modified[1000][256];
+    int  modified_count;
+
+    char deleted[1000][256];
+    int  deleted_count;
+} CompareResult;
+
+int  load_snapshot_meta(const char *meta_path, FileInfo files[], int *count);
+void compare_snapshots(FileInfo *baseline, int base_count,
+                       FileInfo *current,  int curr_count,
+                       CompareResult *result);
+void print_compare_result(const CompareResult *result);
+```
+
+**How it works:**
+
+The comparison runs in three stages:
+
+**Stage 1 — Load the baseline from `snapshot.meta`**
+
+`load_snapshot_meta()` opens the meta file and reads it line by line using `fgets`. It skips a `created_at` header line if present and any blank lines. For every remaining line it uses `sscanf` to parse the path, size, and mtime into a `FileInfo` struct, building up the baseline array. This is the inverse of what `snapshot.c` writes.
+
+**Stage 2 — Scan the live directory**
+
+`scan_directory()` from Task 1 is called again on the source directory to get the current state as a fresh `FileInfo` array.
+
+**Stage 3 — Compare the two arrays**
+
+`compare_snapshots()` uses an internal helper `find_in_list()` which does a linear search by path string using `strcmp`. The comparison runs in two passes:
+
+- **Pass 1 (walk the baseline):** For each file in the snapshot, search for it in the live array.
+  - Not found → **Deleted**
+  - Found but `size` or `modified_time` differs → **Modified**
+  - Found and identical → no change
+
+- **Pass 2 (walk the live directory):** For each file in the live array, search for it in the baseline.
+  - Not found → **Added**
+
+All matching is done on absolute path. A file is only considered the same file if the path string is identical.
+
+**Output format:**
+
+```
+========== Comparison Report ==========
+
+[Added]  (1 file(s))
+  + /home/user/file_project/newfile.txt
+
+[Modified]  (1 file(s))
+  ~ /home/user/file_project/main.c
+
+[Deleted]  (1 file(s))
+  - /home/user/file_project/old.c
+
+=======================================
+```
+
+**Known limitation:** Matching is based on absolute path, so if the source directory is moved or renamed between snapshot and comparison, all files will show as Deleted + Added rather than Unchanged.
+
+---
+
+## How the Three Tasks Connect in `main.c`
+
+```
+main.c
+  │
+  ├─ Task 1: scan_directory(source_dir)
+  │         → fills files[] with live FileInfo
+  │
+  ├─ Task 2: create_snapshot(source_dir, snapshot_folder, files, count)
+  │         → copies files into snapshots/snapshot_1/
+  │         → writes snapshots/snapshot_1/snapshot.meta
+  │
+  └─ Task 3: load_snapshot_meta(meta_path, baseline, &base_count)
+             scan_directory(source_dir, current, &curr_count)
+             compare_snapshots(baseline, base_count, current, curr_count, &result)
+             print_compare_result(&result)
+```
+
+Because all three run in the same execution right now, the comparison will always show no changes on the first run (you are comparing the snapshot to the directory it was just taken from). To see real diffs:
+
+1. Run the program once — the snapshot is created.
+2. Add, edit, or delete a file inside `source_dir`.
+3. Run the program again — Task 3 will detect and report the changes.
+
+---
+
 ## Known Issues & Technical Debt
 
-These must be addressed before or alongside new task work:
-
-| # | Location | Issue | Severity |
-|---|----------|-------|----------|
-| 1 | `scanner.c:18` | `stat()` is called **twice** on every path — once before the error check and once again (the first call result is silently discarded). Remove the first call. | Medium |
-| 2 | `scanner.h` | `path[256]` is too short for deeply nested trees. Increase to **512** to match the `char path[512]` buffer already used in `scanner.c`. A mismatch here causes silent buffer overflows. | High |
-| 3 | `scanner.c` | `sprintf` for path construction has no bounds check. Replace with `snprintf(path, sizeof(path), ...)`. | High |
-| 4 | `main.c` | The `files[1000]` hard-limit means the scanner silently truncates results beyond 1000 files. The limit should be passed into `scan_directory` and checked inside `scan_recursive`. | Medium |
-| 5 | `scanner.c` | Symbolic links are neither followed nor reported. Decide on a policy (skip or dereference) and document it. | Low |
+| # | Task Holder | Location | Issue | Severity |
+| --- | --- | --- | --- | --- |
+| 1 | Task 1 | `scanner.c:18` | `stat()` is called **twice** on every path — the first result is silently discarded. Remove the first call. | Medium |
+| 2 | Task 1 | `scanner.h` | `path[256]` is too short for deeply nested trees. Increase to **512** to match the internal buffer in `scanner.c`. A mismatch causes silent buffer overflows. | High |
+| 3 | Task 1 | `scanner.c` | `sprintf` for path construction has no bounds check. Replace with `snprintf(path, sizeof(path), ...)`. | High |
+| 4 | Task 4 | `main.c` | The `files[1000]` hard-limit silently truncates results beyond 1000 files. The limit should be passed into `scan_directory` and checked inside `scan_recursive`. | Medium |
+| 5 | Task 1 | `scanner.c` | Symbolic links are neither followed nor reported. Decide on a policy (skip or dereference) and document it. | Low |
+| 6 | Task 2 | `snapshot.c` | `sprintf` in `create_snapshot` writes into a 700-byte `line` buffer but paths can be up to 256 bytes — safe today but fragile. Replace with `snprintf`. | Medium |
+| 7 | Task 2 | `snapshot.c` | Return values from `write()` in `copy_file()` and while writing to `snapshot.meta` are not checked. Disk-full or partial writes will fail silently. | Medium |
+| 8 | Task 2 | `snapshot.c` | `snapshot.meta` does not yet include the `created_at` timestamp line. Add `time(NULL)` as the first line before the file loop — required for Task 4's `list_snapshots`. | Medium |
+| 9 | Task 3 | `compare.c` | `load_snapshot_meta()` uses space-delimited parsing (`%s`), so paths containing spaces cannot be read reliably. | Low |
+| 10 | Task 4 | `main.c` | Paths are hard-coded to a specific machine. These need to be adjusted before running on a new environment. | Low |
+| 11 | Task 3 | `compare.c` | `find_in_list` is O(n²) — fine for small directories, but will be slow for thousands of files. Could be improved with sorting + binary search if needed. | Low |
 
 ---
 
 ## Architecture Overview
 
-The system is designed around five sequential tasks. Only Task 1 is done. Tasks 2–5 are the contributor's responsibility.
-
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌───────────────────┐
 │  Task 1: Scan   │────▶│ Task 2: Snapshot  │────▶│ Task 3: Compare   │
-│  (COMPLETE)     │     │  Creator          │     │  Engine           │
+│  ✅ COMPLETE    │     │  ✅ COMPLETE      │     │  ✅ COMPLETE      │
 └─────────────────┘     └──────────────────┘     └───────────────────┘
                                  │                         │
                                  ▼                         ▼
                         ┌──────────────────┐     ┌───────────────────┐
                         │ Task 5: Restore  │◀────│ Task 4: Snapshot  │
-                        │  System          │     │  Manager (CLI)    │
-                        └──────────────────┘     └───────────────────┘
+                        │  🔲 Not started  │     │  Manager (CLI)    │
+                        └──────────────────┘     │  🔲 Not started   │
+                                                 └───────────────────┘
 ```
 
 ---
 
-## Tasks 2–5 Specifications
-
-### Task 2 — Snapshot Creator
-
-**Goal:** Copy the scanned files into a versioned snapshot directory and persist the metadata.
-
-**Inputs:** A source directory path and a snapshot name (e.g., `snap1`).
-
-**Expected output:**
-```
-/snapshots/
-  snap1/
-    files/          ← physical copies of every scanned file, mirroring original paths
-    snapshot.meta   ← JSON or plain-text index (path, size, mtime for each file)
-```
-
-**Implementation notes:**
-- Use the `FileInfo` array produced by `scan_directory` to know what to copy.
-- Reproduce the original subdirectory structure under `files/` so restore is straightforward.
-- `snapshot.meta` must be machine-readable — it is consumed by Tasks 3 and 5.
-- Use `mkdir -p` semantics (`mkdirp` helper or recursive `mkdir` calls) for directory creation.
-- Suggested new files: `snapshot.h`, `snapshot.c`.
-
----
-
-### Task 3 — Change Detection (Comparison Engine)
-
-**Goal:** Compare the live file system against a named snapshot and report what changed.
-
-**Inputs:** A snapshot name and a directory to compare against.
-
-**Expected output:**
-```
-[Added]
-  new_file.txt
-[Modified]
-  main.c
-[Deleted]
-  old_file.txt
-```
-
-**Implementation notes:**
-- Load `snapshot.meta` to get the baseline `FileInfo` list.
-- Run `scan_directory` on the live directory to get the current state.
-- Compare the two lists: match on path, then compare `size` and `modified_time`.
-- A file present in the snapshot but absent live → **Deleted**.
-- A file present live but absent in the snapshot → **Added**.
-- A file present in both but with differing `size` or `mtime` → **Modified**.
-- Optional advanced mode: verify with SHA-256 hashing (use `openssl/sha.h` or compute manually) to catch content changes that do not alter `mtime`.
-- Suggested new files: `compare.h`, `compare.c`.
-
----
+## Tasks 4–5 Specifications
 
 ### Task 4 — Snapshot Manager (CLI)
 
 **Goal:** Provide a command-line interface to list and delete snapshots.
 
 **Supported commands:**
+
 ```
 list_snapshots                  → prints all snapshots with creation time
 delete_snapshot <name>          → removes the snapshot directory and meta file
@@ -158,16 +271,18 @@ create_snapshot <dir> <name>    → wraps Task 2
 ```
 
 **Expected output:**
+
 ```
-snap1 - created at 2026-04-30
-snap2 - created at 2026-04-29
-Snapshot snap1 deleted successfully.
+snapshot_1 - created at 2026-04-30
+snapshot_2 - created at 2026-04-29
+Snapshot snapshot_1 deleted successfully.
 ```
 
 **Implementation notes:**
-- Snapshot creation time should be stored in `snapshot.meta` at write time (use `time(NULL)`).
+
+- Snapshot creation time is stored on the `created_at` line of `snapshot.meta` (see Issue #8 above — must be added to `snapshot.c` first).
 - `list_snapshots` reads the top-level `/snapshots/` directory, opens each `snapshot.meta`, and prints the name and timestamp.
-- `delete_snapshot` uses `rm -rf` equivalent logic (`nftw` with `FTW_DEPTH | FTW_PHYS` and `unlink`/`rmdir`).
+- `delete_snapshot` uses `nftw` with `FTW_DEPTH | FTW_PHYS` to recursively `unlink` files then `rmdir` directories.
 - All commands should be reachable from `main.c` via `argv` parsing.
 - Suggested new files: `manager.h`, `manager.c`.
 
@@ -180,12 +295,14 @@ Snapshot snap1 deleted successfully.
 **Inputs:** A snapshot name and a target directory.
 
 **Expected behaviour:**
+
 - Files present in the snapshot but missing live → **copied in**.
 - Files present live but absent from the snapshot → **deleted**.
 - Files present in both but modified → **overwritten** with the snapshot version.
 - Permissions and `mtime` should be restored where possible (`utimes`, `chmod`).
 
 **Safety requirements:**
+
 - Before destructive operations, print a summary of what will change and prompt `y/N` for confirmation.
 - Never operate outside the target directory (validate all paths with `realpath` and check the prefix).
 - Consider writing a temporary staging area and doing an atomic swap to avoid leaving a half-restored state on error.
@@ -196,24 +313,22 @@ Snapshot snap1 deleted successfully.
 ## Build Instructions
 
 ```bash
-# Current (Task 1 only)
-gcc -o scanner main.c scanner.c -Wall -Wextra
+# Tasks 1, 2, and 3 (current)
+gcc -o project main.c scanner.c snapshot.c compare.c -Wall -Wextra
 
-# After adding new modules (example)
-gcc -o snapshot main.c scanner.c snapshot.c compare.c manager.c restore.c -Wall -Wextra
+# After adding Tasks 4 and 5
+gcc -o project main.c scanner.c snapshot.c compare.c manager.c restore.c -Wall -Wextra
 ```
 
-No external dependencies beyond a standard POSIX C library are required for the core tasks. Optional SHA-256 hashing links against `-lssl` (`openssl/sha.h`).
+No external dependencies beyond a standard POSIX C library are required for the core tasks. Optional SHA-256 hashing for Task 3 advanced mode links against `-lssl` (`openssl/sha.h`).
 
 ---
 
-## Suggested Development Order
+## Suggested Development Order for Remaining Tasks
 
-1. **Fix the known issues** in `scanner.c` and `scanner.h` listed above before writing new code — they affect correctness of every downstream task.
-2. Implement **Task 2** (snapshot creator) — all later tasks depend on `snapshot.meta`.
-3. Implement **Task 3** (comparison engine) — validates that snapshots are correct.
-4. Implement **Task 4** (CLI manager) — wires Tasks 2 & 3 together behind `argv`.
-5. Implement **Task 5** (restore) — last because it is the most destructive operation and should be tested against known-good snapshots from Tasks 2–3.
+1. **Fix known issues** listed above (especially #2, #3, #8) before writing new code — they affect correctness of Tasks 4 and 5.
+2. Implement **Task 4** (CLI manager) — wires the existing Tasks 2 & 3 behind `argv`.
+3. Implement **Task 5** (restore) — last because it is the most destructive operation and should be tested against known-good snapshots produced by Tasks 2–3.
 
 ---
 
