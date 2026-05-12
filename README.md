@@ -10,8 +10,8 @@
 | ---- | ----------- | ------ |
 | Task 1 | File System Scanner | ✅ COMPLETE |
 | Task 2 | Snapshot Creator | ✅ COMPLETE |
-| Task 3 | Change Detection (Comparison Engine) | ✅ COMPLETE |
-| Task 4 | Snapshot Manager (CLI) | 🔲 Not started |
+| Task 3 | Snapshot Storage Manager | 🟡 PARTIALLY IMPLEMENTED |
+| Task 4 | Change Detection (Comparison Engine) | ✅ COMPLETE |
 | Task 5 | Restore System | 🔲 Not started |
 
 ---
@@ -20,13 +20,15 @@
 
 ```
 .
-├── main.c          # Entry point — drives Tasks 1, 2, and 3 in sequence
+├── main.c          # Entry point — currently drives Tasks 1, 2, and 4 in sequence
 ├── scanner.h       # Public API and FileInfo struct definition
 ├── scanner.c       # Recursive directory walker (Task 1)
 ├── snapshot.h      # Public API for snapshot creation
 ├── snapshot.c      # Snapshot creator implementation (Task 2)
+├── storage.h       # Public API for snapshot storage manager (Task 3)
+├── storage.c       # Snapshot storage manager implementation (Task 3, partial)
 ├── compare.h       # Public API for change detection
-├── compare.c       # Comparison engine implementation (Task 3)
+├── compare.c       # Comparison engine implementation (Task 4)
 ├── snapshots/      # Directory where snapshots are stored
 │   └── snapshot_1/
 │       ├── snapshot.meta   ← metadata index for this snapshot
@@ -74,7 +76,7 @@ The timestamp is formatted with `strftime("%Y-%m-%d %H:%M")`.
 
 **Files:** `snapshot.h`, `snapshot.c`
 
-**Purpose:** Take the `FileInfo` array produced by Task 1 and physically copy every file into a versioned snapshot directory, while writing a machine-readable metadata index (`snapshot.meta`) that Tasks 3 and 5 depend on.
+**Purpose:** Take the `FileInfo` array produced by Task 1 and physically copy every file into a versioned snapshot directory, while writing a machine-readable metadata index (`snapshot.meta`) that Tasks 3, 4, and 5 depend on.
 
 **Public API (`snapshot.h`):**
 
@@ -120,7 +122,41 @@ Snapshot created successfully in: /home/user/snapshots/snapshot_1
 
 ---
 
-### Task 3 — Change Detection (Comparison Engine) ✅
+### Task 3 — Snapshot Storage Manager 🟡
+
+**Files:** `storage.h`, `storage.c`
+
+**Purpose:** Organize and persist snapshots under a central snapshots root, with unique timestamp-based names and snapshot metadata.
+
+**Public API (`storage.h`):**
+
+```c
+void generate_snapshot_name (char *out_name, int len);
+
+int save_snapshot(const char *snapshots_root,
+                  const char *snap_name,
+                  FileInfo files[], int count);
+
+void list_snapshots(const char *snapshots_root);
+int delete_snapshot(const char *snapshots_root, const char *snap_name);
+void enforce_limit(const char *snapshots_root, int max_count);
+```
+
+**What is implemented now (`storage.c`):**
+
+- `generate_snapshot_name()` creates names like `YYYY-MM-DD_HH-MM` using `strftime`.
+- `save_snapshot()` creates `<snapshots_root>/<snap_name>/snapshot.meta`, writes `created_at`, then stores `<path> <size> <mtime>` for each `FileInfo`.
+- Internal helper `mkdir_p()` recursively creates missing directories.
+
+**What is still missing for full Task 3 completion:**
+
+- `list_snapshots()` body
+- `delete_snapshot()` body
+- `enforce_limit()` body
+
+---
+
+### Task 4 — Change Detection (Comparison Engine) ✅
 
 **Files:** `compare.h`, `compare.c`
 
@@ -194,7 +230,7 @@ All matching is done on absolute path. A file is only considered the same file i
 
 ---
 
-## How the Three Tasks Connect in `main.c`
+## How the Current Runtime Flow Connects in `main.c`
 
 ```
 main.c
@@ -206,7 +242,7 @@ main.c
   │         → copies files into snapshots/snapshot_1/
   │         → writes snapshots/snapshot_1/snapshot.meta
   │
-  └─ Task 3: load_snapshot_meta(meta_path, baseline, &base_count)
+  └─ Task 4: load_snapshot_meta(meta_path, baseline, &base_count)
              scan_directory(source_dir, current, &curr_count)
              compare_snapshots(baseline, base_count, current, curr_count, &result)
              print_compare_result(&result)
@@ -216,7 +252,7 @@ Because all three run in the same execution right now, the comparison will alway
 
 1. Run the program once — the snapshot is created.
 2. Add, edit, or delete a file inside `source_dir`.
-3. Run the program again — Task 3 will detect and report the changes.
+3. Run the program again — Task 4 will detect and report the changes.
 
 ---
 
@@ -231,10 +267,10 @@ Because all three run in the same execution right now, the comparison will alway
 | 5 | Task 1 | `scanner.c` | Symbolic links are neither followed nor reported. Decide on a policy (skip or dereference) and document it. | Low |
 | 6 | Task 2 | `snapshot.c` | `sprintf` in `create_snapshot` writes into a 700-byte `line` buffer but paths can be up to 256 bytes — safe today but fragile. Replace with `snprintf`. | Medium |
 | 7 | Task 2 | `snapshot.c` | Return values from `write()` in `copy_file()` and while writing to `snapshot.meta` are not checked. Disk-full or partial writes will fail silently. | Medium |
-| 8 | Task 2 | `snapshot.c` | `snapshot.meta` does not yet include the `created_at` timestamp line. Add `time(NULL)` as the first line before the file loop — required for Task 4's `list_snapshots`. | Medium |
-| 9 | Task 3 | `compare.c` | `load_snapshot_meta()` uses space-delimited parsing (`%s`), so paths containing spaces cannot be read reliably. | Low |
+| 8 | Task 2 | `snapshot.c` | `snapshot.meta` does not yet include the `created_at` timestamp line. Add `time(NULL)` as the first line before the file loop — required for Task 3's `list_snapshots`. | Medium |
+| 9 | Task 4 | `compare.c` | `load_snapshot_meta()` uses space-delimited parsing (`%s`), so paths containing spaces cannot be read reliably. | Low |
 | 10 | Task 4 | `main.c` | Paths are hard-coded to a specific machine. These need to be adjusted before running on a new environment. | Low |
-| 11 | Task 3 | `compare.c` | `find_in_list` is O(n²) — fine for small directories, but will be slow for thousands of files. Could be improved with sorting + binary search if needed. | Low |
+| 11 | Task 4 | `compare.c` | `find_in_list` is O(n²) — fine for small directories, but will be slow for thousands of files. Could be improved with sorting + binary search if needed. | Low |
 
 ---
 
@@ -242,23 +278,29 @@ Because all three run in the same execution right now, the comparison will alway
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌───────────────────┐
-│  Task 1: Scan   │────▶│ Task 2: Snapshot  │────▶│ Task 3: Compare   │
+│  Task 1: Scan   │────▶│ Task 2: Snapshot  │────▶│ Task 4: Compare   │
 │  ✅ COMPLETE    │     │  ✅ COMPLETE      │     │  ✅ COMPLETE      │
 └─────────────────┘     └──────────────────┘     └───────────────────┘
-                                 │                         │
-                                 ▼                         ▼
-                        ┌──────────────────┐     ┌───────────────────┐
-                        │ Task 5: Restore  │◀────│ Task 4: Snapshot  │
-                        │  🔲 Not started  │     │  Manager (CLI)    │
-                        └──────────────────┘     │  🔲 Not started   │
-                                                 └───────────────────┘
+                                 │
+                                 ▼
+                        ┌────────────────────────────┐
+                        │ Task 3: Snapshot Storage   │
+                        │ Manager                    │
+                        │ 🟡 PARTIALLY IMPLEMENTED   │
+                        └────────────────────────────┘
+                                 │
+                                 ▼
+                        ┌──────────────────┐
+                        │ Task 5: Restore  │
+                        │  🔲 Not started  │
+                        └──────────────────┘
 ```
 
 ---
 
-## Tasks 4–5 Specifications
+## Tasks 3 and 5 Specifications
 
-### Task 4 — Snapshot Manager (CLI)
+### Task 3 — Snapshot Storage Manager (CLI)
 
 **Goal:** Provide a command-line interface to list and delete snapshots.
 
@@ -284,7 +326,7 @@ Snapshot snapshot_1 deleted successfully.
 - `list_snapshots` reads the top-level `/snapshots/` directory, opens each `snapshot.meta`, and prints the name and timestamp.
 - `delete_snapshot` uses `nftw` with `FTW_DEPTH | FTW_PHYS` to recursively `unlink` files then `rmdir` directories.
 - All commands should be reachable from `main.c` via `argv` parsing.
-- Suggested new files: `manager.h`, `manager.c`.
+- Storage functionality currently lives in `storage.h` / `storage.c`.
 
 ---
 
@@ -313,22 +355,22 @@ Snapshot snapshot_1 deleted successfully.
 ## Build Instructions
 
 ```bash
-# Tasks 1, 2, and 3 (current)
+# Tasks 1, 2, and 4 (current runtime flow)
 gcc -o project main.c scanner.c snapshot.c compare.c -Wall -Wextra
 
-# After adding Tasks 4 and 5
-gcc -o project main.c scanner.c snapshot.c compare.c manager.c restore.c -Wall -Wextra
+# After completing Tasks 3 and 5 integration
+gcc -o project main.c scanner.c snapshot.c compare.c storage.c restore.c -Wall -Wextra
 ```
 
-No external dependencies beyond a standard POSIX C library are required for the core tasks. Optional SHA-256 hashing for Task 3 advanced mode links against `-lssl` (`openssl/sha.h`).
+No external dependencies beyond a standard POSIX C library are required for the core tasks. Optional SHA-256 hashing for Task 4 advanced mode links against `-lssl` (`openssl/sha.h`).
 
 ---
 
 ## Suggested Development Order for Remaining Tasks
 
-1. **Fix known issues** listed above (especially #2, #3, #8) before writing new code — they affect correctness of Tasks 4 and 5.
-2. Implement **Task 4** (CLI manager) — wires the existing Tasks 2 & 3 behind `argv`.
-3. Implement **Task 5** (restore) — last because it is the most destructive operation and should be tested against known-good snapshots produced by Tasks 2–3.
+1. **Fix known issues** listed above (especially #2, #3, #8) before writing new code — they affect correctness of Tasks 3 and 5.
+2. Complete **Task 3** (storage manager): implement `list_snapshots`, `delete_snapshot`, and `enforce_limit` in `storage.c`, then wire CLI commands in `main.c`.
+3. Implement **Task 5** (restore) — last because it is the most destructive operation and should be tested against known-good snapshots produced by Tasks 2–4.
 
 ---
 
