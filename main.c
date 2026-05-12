@@ -5,9 +5,9 @@
 #include "compare.h"
 
 int main() {
-    const char *source_dir      = "/home/seif-ismail/os_project/file_project";
-    const char *snapshot_folder = "/home/seif-ismail/os_project/snapshots/snapshot_1";
-    const char *meta_path       = "/home/seif-ismail/os_project/snapshots/snapshot_1/snapshot.meta";
+    const char *source_dir      = "/home/abdullrhman/linux-file-system-/file_project";
+    const char *snapshot_folder = "/home/abdullrhman/linux-file-system-/snapshots/snapshot_1";
+    const char *meta_path       = "/home/abdullrhman/linux-file-system-/snapshots/snapshot_1/snapshot.meta";
 
     FileInfo files[1000];
     int count;

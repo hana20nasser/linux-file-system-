@@ -3,7 +3,6 @@
 
 #include "scanner.h"
 #include <dirent.h>
-#include <ftw.h>
 #include <sys/stat.h>
 
 #define SNAPSHOTS_ROOT "/home/abdullrhman/linux-file-system-/snapshots"
