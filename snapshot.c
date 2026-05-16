@@ -1,133 +1,60 @@
+#include "../project/utils.c"
+#include "../project/scanner.c"
+#include "../project/copy.c"
+#include "../project/storage.c"
+#include "../project/compare.c"
+#include "../project/restore.c"
 
-#include <stdio.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include "snapshot.h"
-#define BUFFER_SIZE 1024
-#define MAX_PATH  1024
+int main(int argc, char *argv[])
+{
+    if (argc < 2)
+    {
+        printf("Usage: snapshot [command] [args]\n");
+        printf("Commands:\n  scan [path]\n  create [snapshot_name] [path]\n  compare [snapshot_name]\n  restore [snapshot_name]\n");
+        exit(0);
+    }
 
-void create_directories(const char *path) {  //mkdir function 
-    char temp[MAX_PATH];
-    int i;
+    char *command = argv[1];
 
-    strcpy(temp, path);
-
-    for (i = 1; temp[i] != '\0'; i++) {
-        if (temp[i] == '/') {
-            temp[i] = '\0';
-            mkdir(temp, 0777);
-            temp[i] = '/';
+    if (strcmp(command, "scan") == 0)
+    {
+        char *path = (argc > 2) ? argv[2] : ".";
+        run_scan(path);
+    }
+    else if (strcmp(command, "create") == 0)
+    {
+        if (argc < 3)
+        {
+            printf("Error: Provide snapshot name. (e.g., snapshot create v1 demo)\n");
+            exit(0);
         }
+
+        char *target = (argc > 3) ? argv[3] : ".";
+
+        run_create(argv[2], target);
     }
-
-    mkdir(temp, 0777);
-}
-
-void create_parent_directory(const char *file_path) {
-    char parent[MAX_PATH];
-    char *last_slash;
-
-    strcpy(parent, file_path);
-
-    last_slash = strrchr(parent, '/');
-
-    if (last_slash != NULL) {
-        *last_slash = '\0';
-        create_directories(parent);
-    }
-}
-
-int copy_file(const char *source, const char *destination) {
-    int source_fd;
-    int destination_fd;
-    char buffer[BUFFER_SIZE];
-    int bytes_read;
-
-    source_fd = open(source, O_RDONLY);
-
-    if (source_fd == -1) {
-        printf("Cannot open source file: %s\n", source);
-        return -1;
-    }
-
-    create_parent_directory(destination);
-
-    destination_fd = open(destination, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-
-    if (destination_fd == -1) {
-        printf("Cannot create destination file: %s\n", destination);
-        close(source_fd);
-        return -1;
-    }
-
-    while ((bytes_read = read(source_fd, buffer, BUFFER_SIZE)) > 0) {
-        write(destination_fd, buffer, bytes_read);
-    }
-
-    close(source_fd);
-    close(destination_fd);
-
-    return 0;
-}
-
-void get_relative_path(const char *source_dir, const char *full_path, char *relative_path) {
-    int source_len = strlen(source_dir);
-
-    if (strncmp(source_dir, full_path, source_len) == 0) {
-        strcpy(relative_path, full_path + source_len);
-
-        if (relative_path[0] == '/') {
-            memmove(relative_path, relative_path + 1, strlen(relative_path));
+    else if (strcmp(command, "compare") == 0)
+    {
+        if (argc < 3)
+        {
+            printf("Error: Provide snapshot to compare. (e.g., snapshot compare v1)\n");
+            exit(0);
         }
-    } else {
-        strcpy(relative_path, full_path);
+        run_compare(argv[2]);
     }
-}
-
-int create_snapshot(const char *source_dir, const char *snapshot_folder, FileInfo files[], int count) {
-    int i;
-    char relative_path[MAX_PATH];
-    char destination_path[MAX_PATH];
-    char meta_path[MAX_PATH];
-    int meta_fd;
-
-    create_directories(snapshot_folder);
-
-    snprintf(meta_path, MAX_PATH, "%s/snapshot.meta", snapshot_folder);
-
-    meta_fd = open(meta_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-
-    if (meta_fd == -1) {
-        printf("Cannot create metadata file.\n");
-        return -1;
-    }
-
-    for (i = 0; i < count; i++) {
-        get_relative_path(source_dir, files[i].path, relative_path);
-
-        snprintf(destination_path, MAX_PATH, "%s/%s", snapshot_folder, relative_path);
-
-        if (copy_file(files[i].path, destination_path) == 0) {
-            char line[700];
-
-            sprintf(line, "%s %ld %ld\n",
-                    files[i].path,
-                    files[i].size,
-                    files[i].modified_time);
-
-            write(meta_fd, line, strlen(line));
-
-            printf("Copied: %s\n", files[i].path);
-        } else {
-            printf("Failed to copy: %s\n", files[i].path);
+    else if (strcmp(command, "restore") == 0)
+    {
+        if (argc < 3)
+        {
+            printf("Error: Provide snapshot to restore. (e.g., snapshot restore v1)\n");
+            exit(0);
         }
+        run_restore(argv[2]);
+    }
+    else
+    {
+        printf("Unknown command: %s\n", command);
     }
 
-    close(meta_fd);
-
-    printf("\nSnapshot created successfully in: %s\n", snapshot_folder);
-
-    return 0;
+    exit(0);
 }
