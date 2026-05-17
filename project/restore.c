@@ -8,10 +8,17 @@
 
 void run_restore(char *snap_name)
 {
-  char meta_path[512];
-  char snap_dir[256];
+  // FIX: declared as static so they live in the data segment, NOT on the stack.
+  // The xv6 user stack is only 4096 bytes. The original code put ~3856 bytes
+  // on the stack before even calling copy_file() (which adds another ~524 bytes),
+  // causing a store page fault (scause=0xf, sepc=0x2, stval=0x3ff8).
+  static char meta_path[512];
+  static char snap_dir[256];
+  static char buf[2048];
+  static char backup_filepath[512];
+  static char live_filepath[512];
+
   int fd_meta;
-  char buf[2048];
   int n;
 
   fmt_path(snap_dir, "snapshots", snap_name);
@@ -51,9 +58,6 @@ void run_restore(char *snap_name)
         {
           *comma = '\0';
           char *filename = line_start;
-
-          char backup_filepath[512];
-          char live_filepath[512];
 
           char *base = filename;
 
